@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  api:
+    image: ${DOCKER_USERNAME}/frp-manager-api:latest
+    # build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./configs:/app/configs
+      - ./data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:///./data/frp_manager.db
+      - SECRET_KEY=${SECRET_KEY}
+      - WHMCS_API_URL=${WHMCS_API_URL}
+      - WHMCS_IDENTIFIER=${WHMCS_IDENTIFIER}
+      - WHMCS_SECRET=${WHMCS_SECRET}
+    restart: unless-stopped
+
+  # 如果需要使用MySQL替代SQLite，取消下面的注释
+  # db:
+  #   image: mysql:8.0
+  #   environment:
+  #     - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+  #     - MYSQL_DATABASE=frp_manager
+  #     - MYSQL_USER=${MYSQL_USER}
+  #     - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   restart: unless-stopped
+
+# volumes:
+#   mysql_data:
