@@ -10,6 +10,7 @@ RUN apt-get update && \
     libpq-dev \
     default-libmysqlclient-dev \
     build-essential \
+    libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置pip环境变量
@@ -19,13 +20,13 @@ ENV PIP_NO_CACHE_DIR=1 \
 # 升级pip和工具
 RUN pip install --upgrade pip setuptools wheel
 
-# 首先安装基础依赖
-COPY requirements-base.txt .
-RUN pip install -r requirements-base.txt
+# 分步安装依赖
+COPY requirements-base.txt requirements.txt requirements-dev.txt ./
 
-# 然后安装其他依赖
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+# 首先安装加密相关的包
+RUN pip install cryptography==41.0.5 && \
+    pip install -r requirements-base.txt && \
+    pip install -r requirements.txt
 
 # 运行阶段
 FROM python:3.9-slim
@@ -38,6 +39,7 @@ RUN apt-get update && \
     curl \
     libpq5 \
     default-mysql-client \
+    libffi7 \
     && rm -rf /var/lib/apt/lists/*
 
 # 从构建阶段复制Python包
