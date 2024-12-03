@@ -3,7 +3,9 @@ version: '3.8'
 services:
   api:
     image: ${DOCKER_USERNAME}/frp-manager-api:latest
-    # build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
@@ -13,18 +15,58 @@ services:
       - ./data:/app/data
     environment:
       - DATABASE_URL=sqlite:///./data/frp_manager.db
+      - REDIS_URL=redis://redis:6379/0
       - SECRET_KEY=${SECRET_KEY}
       - WHMCS_API_URL=${WHMCS_API_URL}
       - WHMCS_IDENTIFIER=${WHMCS_IDENTIFIER}
       - WHMCS_SECRET=${WHMCS_SECRET}
       - API_URL=http://localhost:8000
-    command: python main.py
+      - ENVIRONMENT=production
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   manager:
     build: .
@@ -34,21 +76,51 @@ services:
       - ./configs:/app/configs
     environment:
       - API_URL=http://api:8000
+      - REDIS_URL=redis://redis:6379/0
     command: manage
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # 如果需要使用MySQL替代SQLite，取消下面的注释
-  # db:
-  #   image: mysql:8.0
-  #   environment:
-  #     - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-  #     - MYSQL_DATABASE=frp_manager
-  #     - MYSQL_USER=${MYSQL_USER}
-  #     - MYSQL_PASSWORD=${MYSQL_PASSWORD}
-  #   volumes:
-  #     - mysql_data:/var/lib/mysql
-  #   restart: unless-stopped
+  # MySQL配置（可选）
+  db:
+    image: mysql:8.0
+    profiles: ["with-mysql"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=frp_manager
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-# volumes:
-#   mysql_data:
+volumes:
+  redis_data:
+  mysql_data:

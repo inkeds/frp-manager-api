@@ -1,34 +1,53 @@
+FROM python:3.9-slim as builder
+
+WORKDIR /build
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    gcc \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+RUN python -m venv /opt/venv && \
+    . /opt/venv/bin/activate && \
+    pip install --no-cache-dir -r requirements.txt
+
 FROM python:3.9-slim
 
 WORKDIR /app
 
-# 安装系统依赖
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
     less \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制项目文件
-COPY requirements.txt .
-COPY *.py .
-COPY .env.example .env
+COPY --from=builder /opt/venv /opt/venv
 
-# 创建必要的目录
-RUN mkdir -p logs backups
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    API_URL=http://localhost:8000
 
-# 安装Python依赖
-RUN pip install --no-cache-dir -r requirements.txt
+RUN useradd -m -s /bin/bash appuser && \
+    mkdir -p logs backups && \
+    chown -R appuser:appuser /app logs backups
 
-# 设置环境变量
-ENV PYTHONUNBUFFERED=1
-ENV API_URL=http://localhost:8000
+COPY --chown=appuser:appuser *.py .
+COPY --chown=appuser:appuser .env.example .env
 
-# 添加管理脚本入口点
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=3s \
+    CMD curl -f http://localhost:8000/health || exit 1
+
 ENTRYPOINT ["docker-entrypoint.sh"]
 
-# 默认命令为启动API服务
 CMD ["python", "main.py"]
