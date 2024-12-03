@@ -7,6 +7,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./logs:/app/logs
+      - ./backups:/app/backups
       - ./configs:/app/configs
       - ./data:/app/data
     environment:
@@ -15,7 +17,26 @@ services:
       - WHMCS_API_URL=${WHMCS_API_URL}
       - WHMCS_IDENTIFIER=${WHMCS_IDENTIFIER}
       - WHMCS_SECRET=${WHMCS_SECRET}
+      - API_URL=http://localhost:8000
+    command: python main.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
+
+  manager:
+    build: .
+    volumes:
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+      - ./configs:/app/configs
+    environment:
+      - API_URL=http://api:8000
+    command: manage
+    depends_on:
+      - api
 
   # 如果需要使用MySQL替代SQLite，取消下面的注释
   # db:

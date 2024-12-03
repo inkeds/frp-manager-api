@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -8,23 +8,74 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 import os
 import json
+import time
+import sentry_sdk
+from prometheus_client import make_asgi_app, Counter, Histogram
 
 from models import Base, User, Product, Order, UserRole
 from database import engine, get_db
 from whmcs import WHMCSClient
+from logger import setup_logger
+from monitoring import SystemMonitor
+from cache import cached
+from system_check import SystemChecker
+
+# 创建日志记录器
+logger = setup_logger("main")
+
+# 检查系统要求
+if not SystemChecker.print_system_status():
+    logger.error("系统不满足运行要求，程序退出")
+    exit(1)
+
+# 设置Sentry（如果配置了）
+if os.getenv("SENTRY_DSN"):
+    sentry_sdk.init(
+        dsn=os.getenv("SENTRY_DSN"),
+        traces_sample_rate=1.0,
+    )
+    logger.info("Sentry监控已启用")
 
 # 创建数据库表
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="FRP Management API")
 
-# 安全配置
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+# Prometheus metrics
+REQUEST_COUNT = Counter(
+    'http_requests_total',
+    'Total HTTP requests',
+    ['method', 'endpoint', 'status']
+)
+REQUEST_LATENCY = Histogram(
+    'http_request_duration_seconds',
+    'HTTP request latency',
+    ['method', 'endpoint']
+)
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+# 添加Prometheus metrics endpoint
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
+
+# 中间件用于记录请求
+@app.middleware("http")
+async def add_metrics(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+    
+    REQUEST_COUNT.labels(
+        method=request.method,
+        endpoint=request.url.path,
+        status=response.status_code
+    ).inc()
+    
+    REQUEST_LATENCY.labels(
+        method=request.method,
+        endpoint=request.url.path
+    ).observe(duration)
+    
+    return response
 
 # CORS中间件
 app.add_middleware(
@@ -35,8 +86,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 安全配置
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 # WHMCS客户端
 whmcs_client = WHMCSClient()
+
+# 系统监控
+system_monitor = SystemMonitor()
 
 # 辅助函数
 def verify_password(plain_password, hashed_password):
@@ -71,17 +133,53 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     return user
 
 # API路由
+@app.get("/health")
+async def health_check():
+    """健康检查端点"""
+    health_info = system_monitor.check_health()
+    system_info = SystemChecker.get_system_info()
+    warnings, errors = SystemChecker.check_requirements()
+    
+    return {
+        "health_status": health_info,
+        "system_info": system_info,
+        "warnings": warnings if warnings else None,
+        "errors": errors if errors else None
+    }
+
+@app.get("/system/status")
+async def system_status():
+    """系统状态端点"""
+    return {
+        "system_info": SystemChecker.get_system_info(),
+        "system_metrics": system_monitor.get_system_metrics(),
+        "requirements_check": {
+            "warnings": SystemChecker.check_requirements()[0],
+            "errors": SystemChecker.check_requirements()[1]
+        }
+    }
+
+@app.get("/metrics/system")
+async def system_metrics():
+    """系统指标端点"""
+    return system_monitor.get_system_metrics()
+
 @app.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=401,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token = create_access_token(data={"sub": user.username})
-    return {"access_token": access_token, "token_type": "bearer"}
+    try:
+        user = db.query(User).filter(User.username == form_data.username).first()
+        if not user or not verify_password(form_data.password, user.hashed_password):
+            raise HTTPException(
+                status_code=401,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        access_token = create_access_token(data={"sub": user.username})
+        logger.info(f"User {user.username} logged in successfully")
+        return {"access_token": access_token, "token_type": "bearer"}
+    except Exception as e:
+        logger.error(f"Login failed for user {form_data.username}: {str(e)}")
+        raise
 
 @app.post("/users/")
 async def create_user(
@@ -107,8 +205,14 @@ async def create_user(
     return db_user
 
 @app.get("/products/")
+@cached(ttl=300)  # 缓存5分钟
 async def list_products(db: Session = Depends(get_db)):
-    return db.query(Product).filter(Product.is_active == True).all()
+    try:
+        products = db.query(Product).filter(Product.is_active == True).all()
+        return products
+    except Exception as e:
+        logger.error(f"Error listing products: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/orders/")
 async def create_order(
@@ -232,6 +336,14 @@ async def create_config(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# 错误处理
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global error: {str(exc)}")
+    sentry_sdk.capture_exception(exc)
+    return {"detail": "Internal Server Error"}
+
 if __name__ == "__main__":
     import uvicorn
+    logger.info("Starting FRP Management API")
     uvicorn.run(app, host="0.0.0.0", port=8000)
