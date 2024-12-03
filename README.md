@@ -215,7 +215,6 @@ FRP_DASHBOARD_PORT=7500
 FRP_DASHBOARD_USER=admin
 FRP_DASHBOARD_PASS=admin
 ```
-```
 
 ### 3. 重启服务使配置生效
 
