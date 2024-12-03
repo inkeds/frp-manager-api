@@ -17,14 +17,10 @@ ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1
 
-# 复制依赖文件
+# 复制依赖文件并安装
 COPY requirements.txt .
-
-# 创建虚拟环境并安装依赖
-RUN python -m venv /opt/venv && \
-    . /opt/venv/bin/activate && \
-    pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
 # 运行阶段
 FROM python:3.9-slim
@@ -40,12 +36,12 @@ RUN apt-get update && \
     default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# 从构建阶段复制虚拟环境
-COPY --from=builder /opt/venv /opt/venv
+# 从构建阶段复制Python包
+COPY --from=builder /usr/local/lib/python3.9/site-packages/ /usr/local/lib/python3.9/site-packages/
+COPY --from=builder /usr/local/bin/ /usr/local/bin/
 
 # 设置环境变量
-ENV PATH="/opt/venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1 \
+ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     API_URL=http://localhost:8000
 
