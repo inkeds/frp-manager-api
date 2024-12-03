@@ -7,6 +7,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     gcc \
     python3-dev \
+    libpq-dev \
+    default-libmysqlclient-dev \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置pip环境变量
@@ -33,6 +36,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
     less \
+    libpq5 \
+    default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # 从构建阶段复制虚拟环境
