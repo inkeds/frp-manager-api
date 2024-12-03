@@ -14,14 +14,17 @@ services:
       - ./configs:/app/configs
       - ./data:/app/data
     environment:
-      - DATABASE_URL=sqlite:///./data/frp_manager.db
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - SECRET_KEY=${SECRET_KEY}
       - WHMCS_API_URL=${WHMCS_API_URL}
       - WHMCS_IDENTIFIER=${WHMCS_IDENTIFIER}
       - WHMCS_SECRET=${WHMCS_SECRET}
-      - API_URL=http://localhost:8000
-      - ENVIRONMENT=production
+      - ENVIRONMENT=${ENVIRONMENT}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+      - SENTRY_DSN=${SENTRY_DSN}
+      - LOG_LEVEL=${LOG_LEVEL}
     depends_on:
       redis:
         condition: service_healthy
@@ -30,7 +33,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -43,16 +46,20 @@ services:
     logging:
       driver: "json-file"
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "20m"
+        max-file: "5"
+    networks:
+      - frp-network
 
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
     volumes:
       - redis_data:/data
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -67,6 +74,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    networks:
+      - frp-network
 
   manager:
     build: .
@@ -76,7 +85,8 @@ services:
       - ./configs:/app/configs
     environment:
       - API_URL=http://api:8000
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     command: manage
     depends_on:
       api:
@@ -92,6 +102,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    networks:
+      - frp-network
 
   # MySQL配置（可选）
   db:
@@ -123,4 +135,9 @@ services:
 
 volumes:
   redis_data:
+    driver: local
   mysql_data:
+
+networks:
+  frp-network:
+    driver: bridge

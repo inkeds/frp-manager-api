@@ -10,7 +10,10 @@ import os
 import json
 import time
 import sentry_sdk
+import aioredis
 from prometheus_client import make_asgi_app, Counter, Histogram
+from fastapi_limiter import FastAPILimiter
+from fastapi_limiter.depends import RateLimiter
 
 from models import Base, User, Product, Order, UserRole
 from database import engine, get_db
@@ -29,17 +32,50 @@ if not SystemChecker.print_system_status():
     exit(1)
 
 # 设置Sentry（如果配置了）
-if os.getenv("SENTRY_DSN"):
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+if SENTRY_DSN:
     sentry_sdk.init(
-        dsn=os.getenv("SENTRY_DSN"),
+        dsn=SENTRY_DSN,
         traces_sample_rate=1.0,
+        environment=os.getenv("ENVIRONMENT", "development")
     )
-    logger.info("Sentry监控已启用")
+
+# 初始化 FastAPI 应用
+app = FastAPI(
+    title="FRP Manager API",
+    description="FRP Manager API with WHMCS Integration",
+    version="1.0.0"
+)
+
+# 配置 CORS
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
+
+# 配置 Redis
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis = aioredis.from_url(
+    REDIS_URL,
+    encoding="utf-8",
+    decode_responses=True
+)
+
+# 配置 Rate Limiting
+@app.on_event("startup")
+async def startup():
+    await FastAPILimiter.init(redis)
+
+# 定义速率限制装饰器
+rate_limit_minute = RateLimiter(times=60, seconds=60)  # 每分钟60次
+rate_limit_hour = RateLimiter(times=1000, seconds=3600)  # 每小时1000次
 
 # 创建数据库表
 Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="FRP Management API")
 
 # Prometheus metrics
 REQUEST_COUNT = Counter(
@@ -77,14 +113,13 @@ async def add_metrics(request: Request, call_next):
     
     return response
 
-# CORS中间件
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 为所有路由添加速率限制
+@app.middleware("http")
+async def add_rate_limit(request: Request, call_next):
+    if not request.url.path.startswith("/metrics") and not request.url.path.startswith("/health"):
+        await rate_limit_minute(request)
+        await rate_limit_hour(request)
+    return await call_next(request)
 
 # 安全配置
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")
@@ -276,7 +311,7 @@ async def update_order_status(
     status: str,
     db: Session = Depends(get_db),
     current_user: User = Security(get_current_user, scopes=["admin"])
-):
+ ):
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not authorized")
     
